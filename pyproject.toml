@@ -14,6 +14,7 @@ dependencies = [
 pm           = "project_tracker.pm:main"
 task-tracker = "project_tracker.task_tracker:main"
 project      = "project_tracker.project_record:main"
+tt           = "project_tracker.time_cli:main"
 
 [build-system]
 requires = ["hatchling"]

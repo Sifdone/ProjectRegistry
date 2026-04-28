@@ -321,6 +321,159 @@ def cmd_remove(project_id: str) -> int:
     return 0
 
 
+# ── Service management ─────────────────────────────────────────────────────────
+
+_PLIST_LABEL = "com.projecttracker.task-tracker"
+_PLIST_PATH  = Path.home() / "Library" / "LaunchAgents" / f"{_PLIST_LABEL}.plist"
+
+
+def _task_tracker_bin() -> Path:
+    """Resolve the task-tracker executable (same venv as this process)."""
+    bin_dir = Path(sys.executable).parent
+    binary  = bin_dir / "task-tracker"
+    if not binary.exists():
+        print("error: task-tracker binary not found. Run `uv sync` first.", file=sys.stderr)
+        sys.exit(1)
+    return binary
+
+
+def cmd_install_service():
+    import platform, subprocess, time as _time
+
+    system = platform.system()
+
+    if system == "Darwin":
+        binary = _task_tracker_bin()
+        DATA.mkdir(parents=True, exist_ok=True)
+
+        plist = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{_PLIST_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{binary}</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>{DATA / "service.out.log"}</string>
+    <key>StandardErrorPath</key>
+    <string>{DATA / "service.err.log"}</string>
+</dict>
+</plist>"""
+
+        _PLIST_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _PLIST_PATH.write_text(plist)
+
+        uid = os.getuid()
+        result = subprocess.run(
+            ["launchctl", "bootstrap", f"gui/{uid}", str(_PLIST_PATH)],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            # Already loaded — try unloading first then re-loading
+            subprocess.run(["launchctl", "bootout", f"gui/{uid}", str(_PLIST_PATH)],
+                           capture_output=True)
+            subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(_PLIST_PATH)],
+                           check=True, capture_output=True)
+
+        print(f"  Service installed : {_PLIST_PATH}")
+        print(f"  Auto-start        : on login")
+
+        _time.sleep(1)  # give the service a moment to write config.json
+        cfg_path = DATA / "config.json"
+        if cfg_path.exists():
+            cfg = json.loads(cfg_path.read_text())
+            print(f"\n  API key : {cfg['api_key']}")
+            print(f"  Port    : {cfg.get('port', 5123)}")
+        print(f"\n  Logs    : {DATA}/service.{{out,err}}.log")
+
+    elif system == "Windows":
+        binary = _task_tracker_bin()
+        import subprocess
+        svc = "TaskTracker"
+        subprocess.run(["nssm", "install", svc, str(binary)], check=True)
+        subprocess.run(["nssm", "set", svc, "Start", "SERVICE_AUTO_START"], check=True)
+        subprocess.run(["nssm", "set", svc, "AppStdout",
+                        str(DATA / "service.out.log")], check=True)
+        subprocess.run(["nssm", "set", svc, "AppStderr",
+                        str(DATA / "service.err.log")], check=True)
+        subprocess.run(["nssm", "start", svc], check=True)
+        print(f"Service '{svc}' installed and started.")
+    else:
+        print(f"error: unsupported platform '{system}'.", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_uninstall_service():
+    import platform, subprocess
+
+    system = platform.system()
+
+    if system == "Darwin":
+        if not _PLIST_PATH.exists():
+            print("Service is not installed.")
+            return
+        uid = os.getuid()
+        subprocess.run(["launchctl", "bootout", f"gui/{uid}", str(_PLIST_PATH)],
+                       capture_output=True)
+        _PLIST_PATH.unlink()
+        print("Service uninstalled.")
+
+    elif system == "Windows":
+        import subprocess
+        subprocess.run(["nssm", "stop",   "TaskTracker"], capture_output=True)
+        subprocess.run(["nssm", "remove", "TaskTracker", "confirm"], check=True)
+        print("Service uninstalled.")
+    else:
+        print(f"error: unsupported platform '{system}'.", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_service_status():
+    import urllib.request, urllib.error
+
+    cfg_path = DATA / "config.json"
+    if not cfg_path.exists():
+        print("Service not configured. Run `pm install-service` first.")
+        return
+
+    cfg     = json.loads(cfg_path.read_text())
+    port    = cfg.get("port", 5123)
+    api_key = cfg["api_key"]
+
+    # Liveness
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2) as r:
+            print(f"  Service : running  (port {port})")
+    except Exception:
+        print(f"  Service : not running  (port {port})")
+        return
+
+    # Current session
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/state",
+        headers={"X-API-Key": api_key},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=2) as r:
+            state = json.loads(r.read())
+        if state:
+            started = str(state.get("start", "?"))[:19].replace("T", " ")
+            desc    = state.get("description") or "—"
+            print(f"  Session : {state['project_id']}")
+            print(f"            {desc}  (started {started} UTC)")
+        else:
+            print("  Session : none")
+    except Exception as e:
+        print(f"  Session : error ({e})")
+
+
 # ── CLI entry point ────────────────────────────────────────────────────────────
 
 def main():
@@ -332,15 +485,17 @@ def main():
     a.add_argument("--dir", help="Base directory (defaults to CWD)")
     a.add_argument("--inc", action="store_true", help="Append auto-incremented _NNN suffix")
 
-    sub.add_parser("list", help="List registered projects")
+    sub.add_parser("list",   help="List registered projects")
+    sub.add_parser("rollup", help="Total time per project from sessions.jsonl")
+    sub.add_parser("install-service",   help="Install and start the task-tracker background service")
+    sub.add_parser("uninstall-service", help="Stop and remove the task-tracker service")
+    sub.add_parser("service-status",    help="Show service state and current open session")
 
     r = sub.add_parser("register", help="Register an existing project folder")
     r.add_argument("path", help="Path to the project folder (must contain project.yaml)")
 
     s = sub.add_parser("scan", help="Scan a directory tree and register all projects found")
     s.add_argument("directory", help="Root directory to scan")
-
-    sub.add_parser("rollup", help="Total time per project from sessions.jsonl")
 
     rm = sub.add_parser("remove", help="Remove a project from registry (keeps files on disk)")
     rm.add_argument("project_id")
@@ -360,6 +515,12 @@ def main():
         cmd_rollup()
     elif args.cmd == "remove":
         sys.exit(cmd_remove(args.project_id))
+    elif args.cmd == "install-service":
+        cmd_install_service()
+    elif args.cmd == "uninstall-service":
+        cmd_uninstall_service()
+    elif args.cmd == "service-status":
+        cmd_service_status()
 
 
 if __name__ == "__main__":
