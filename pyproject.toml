@@ -11,8 +11,9 @@ dependencies = [
 ]
 
 [project.scripts]
-pm = "project_tracker.pm:main"
+pm           = "project_tracker.pm:main"
 task-tracker = "project_tracker.task_tracker:main"
+project      = "project_tracker.project_record:main"
 
 [build-system]
 requires = ["hatchling"]
