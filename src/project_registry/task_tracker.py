@@ -1,29 +1,19 @@
-# src/project_tracker/task_tracker.py
-import os, json, threading, uuid, platform
+# src/project_registry/task_tracker.py
+import os, json, threading, uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from flask import Flask, request, jsonify
 from waitress import serve
 
-
-# ── Data directory (cross-platform) ───────────────────────────────────────────
-
-def data_dir() -> Path:
-    """Resolve the project-registry data directory for the current OS."""
-    if platform.system() == "Windows":
-        base = Path(os.environ.get("APPDATA", Path.home()))
-    else:  # macOS / Linux
-        base = Path.home() / ".config"
-    d = base / "project-registry"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+from project_registry.config import DATA_DIR, CONFIG_FILE, SESSION_FILE, SESSIONS_LOG, REGISTRY
 
 
-DATA = str(data_dir())
-CFG  = os.path.join(DATA, "config.json")
-CUR  = os.path.join(DATA, "current_session.json")
-LOG  = os.path.join(DATA, "sessions.jsonl")
-REG  = os.path.join(DATA, "registry.json")
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+DATA = str(DATA_DIR)
+CFG  = str(CONFIG_FILE)
+CUR  = str(SESSION_FILE)
+LOG  = str(SESSIONS_LOG)
+REG  = str(REGISTRY)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────

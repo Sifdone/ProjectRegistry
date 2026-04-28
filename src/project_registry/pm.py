@@ -1,27 +1,17 @@
-# src/project_tracker/pm.py
+# src/project_registry/pm.py
 import json, os, re, sys, platform, argparse
 from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
 
-
-# ── Data directory (cross-platform) ───────────────────────────────────────────
-
-def data_dir() -> Path:
-    """Resolve the project-registry data directory for the current OS."""
-    if platform.system() == "Windows":
-        base = Path(os.environ.get("APPDATA", Path.home()))
-    else:  # macOS / Linux
-        base = Path.home() / ".config"
-    d = base / "project-registry"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+from project_registry.config import DATA_DIR, REGISTRY, SESSIONS_LOG
 
 
-DATA = data_dir()
-REG  = DATA / "registry.json"
-SESS = DATA / "sessions.jsonl"
+DATA = DATA_DIR
+DATA.mkdir(parents=True, exist_ok=True)
+REG  = REGISTRY
+SESS = SESSIONS_LOG
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -323,7 +313,7 @@ def cmd_remove(project_id: str) -> int:
 
 # ── Service management ─────────────────────────────────────────────────────────
 
-_PLIST_LABEL = "com.projecttracker.task-tracker"
+_PLIST_LABEL = "com.projectregistry.task-tracker"
 _PLIST_PATH  = Path.home() / "Library" / "LaunchAgents" / f"{_PLIST_LABEL}.plist"
 
 
