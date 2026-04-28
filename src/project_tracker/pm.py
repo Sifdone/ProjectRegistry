@@ -1,128 +1,349 @@
 # src/project_tracker/pm.py
-import json, os, argparse, uuid, re, sys
+import json, os, re, sys, platform, argparse
 from datetime import datetime, timezone
 from pathlib import Path
 
-DATA = Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "ProjectTracker"
-REG  = DATA / "projects.json"
+import yaml
+
+
+# ── Data directory (cross-platform) ───────────────────────────────────────────
+
+def data_dir() -> Path:
+    """Resolve the project-tracker data directory for the current OS."""
+    if platform.system() == "Windows":
+        base = Path(os.environ.get("APPDATA", Path.home()))
+    else:  # macOS / Linux
+        base = Path.home() / ".config"
+    d = base / "project-tracker"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+DATA = data_dir()
+REG  = DATA / "registry.json"
 SESS = DATA / "sessions.jsonl"
 
-def iso_now(): return datetime.now(timezone.utc).isoformat().replace("+00:00","Z")
 
-def load_projects():
-    if REG.exists(): return json.loads(REG.read_text(encoding="utf-8"))
-    return []
+# ── Helpers ────────────────────────────────────────────────────────────────────
 
-def save_projects(items):
-    DATA.mkdir(parents=True, exist_ok=True)
-    REG.write_text(json.dumps(items, indent=2), encoding="utf-8")
+def iso_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
 
 def slug_title(title: str) -> str:
-    """UPPERCASE, spaces->-, strip invalids (A-Z 0-9 _ -)."""
+    """UPPERCASE slug for project ID: spaces → hyphens, strip non-alphanumeric."""
     s = title.strip().replace(" ", "-")
     s = re.sub(r"[^A-Za-z0-9\-_]+", "", s)
     s = re.sub(r"-{2,}", "-", s)
     return s.upper()
 
 
+def make_slug(title: str) -> str:
+    """Lowercase slug for project.yaml slug field: spaces → hyphens."""
+    s = title.strip().lower().replace(" ", "-")
+    s = re.sub(r"[^a-z0-9\-]+", "", s)
+    s = re.sub(r"-{2,}", "-", s).strip("-")
+    return s
+
+
 def next_suffix_from_dir(base_dir: Path) -> int:
-    """
-    Look at ALL subfolders in base_dir. If a folder's last 3 chars are digits,
-    consider them as a candidate. Return max + 1 (or 1 if none).
-    """
+    """Scan sibling dirs for trailing 3-digit suffixes; return max + 1."""
     max_seen = 0
     if not base_dir.exists():
         return 1
     for p in base_dir.iterdir():
-        if not p.is_dir():
-            continue
-        name = p.name
-        if len(name) >= 3 and name[-3:].isdigit():
-            n = int(name[-3:])
+        if p.is_dir() and len(p.name) >= 3 and p.name[-3:].isdigit():
+            n = int(p.name[-3:])
             if n > max_seen:
                 max_seen = n
-    return max_seen + 1 if max_seen >= 0 else 1
+    return max_seen + 1
+
 
 def compute_id_and_path(title: str, base_dir: Path, use_increment: bool) -> tuple[str, Path]:
-    """Build project ID and destination folder path per rules."""
-    tslug = slug_title(title)
+    tslug     = slug_title(title)
     date_part = datetime.now().strftime("%d%m%y")
-    core = f"{tslug}-{date_part}"
-
+    core      = f"{tslug}-{date_part}"
     if use_increment:
-        nxt = next_suffix_from_dir(base_dir)
-        folder_name = f"{core}_{nxt:03d}"
+        folder_name = f"{core}_{next_suffix_from_dir(base_dir):03d}"
     else:
         folder_name = core
+    return f"PROJ-{folder_name}", base_dir / folder_name
 
-    pid = f"PROJ-{folder_name}"
-    dest = base_dir / folder_name
-    return pid, dest
 
-# ---------- commands ----------
+# ── Registry (upsert-by-id) ────────────────────────────────────────────────────
+
+def load_registry() -> list:
+    if REG.exists():
+        return json.loads(REG.read_text(encoding="utf-8"))
+    return []
+
+
+def save_registry(items: list):
+    REG.write_text(json.dumps(items, indent=2), encoding="utf-8")
+
+
+def upsert_registry(pid: str, name: str, path: Path):
+    """Insert or update registry entry by id. Updates path if project moved."""
+    items = load_registry()
+    for item in items:
+        if item.get("id") == pid:
+            item["path"] = str(path)
+            save_registry(items)
+            return
+    items.append({"id": pid, "name": name, "path": str(path), "registered_at": iso_now()})
+    save_registry(items)
+
+
+# ── Interactive prompts ────────────────────────────────────────────────────────
+
+def ask(prompt: str, default=None, required=False) -> str | None:
+    """Prompt the user for input. Returns None if skipped and not required."""
+    hint = f" [{default}]" if default else (" [enter to skip]" if not required else "")
+    while True:
+        val = input(f"  {prompt}{hint}: ").strip()
+        if val:
+            return val
+        if default:
+            return default
+        if not required:
+            return None
+        print("    This field is required.")
+
+
+def ask_choice(prompt: str, choices: list[str], default: str) -> str:
+    """Prompt for a choice from a fixed list."""
+    options = "/".join(choices)
+    while True:
+        val = input(f"  {prompt} ({options}) [{default}]: ").strip().lower()
+        if not val:
+            return default
+        if val in choices:
+            return val
+        print(f"    Please enter one of: {options}")
+
+
+# ── project.yaml builder ───────────────────────────────────────────────────────
+
+def build_project_record(pid: str, name: str, proj_type: str, category: str,
+                          client_name, client_contact, director, producer,
+                          deadline, budget, rate, est_hours) -> dict:
+    return {
+        "schema_version": 1,
+
+        # Identity
+        "id":       pid,
+        "name":     name,
+        "slug":     make_slug(name),
+        "type":     proj_type,
+        "category": category,
+
+        # People
+        "client": {
+            "name":    client_name,
+            "contact": client_contact,
+        },
+        "people": {
+            "director":      director,
+            "producer":      producer,
+            "collaborators": [],
+        },
+
+        # Timeline
+        "created_at": iso_now(),
+        "deadline":   deadline,
+        "phase_log": [
+            {"phase": "concept", "entered_at": iso_now()}
+        ],
+
+        # Financial
+        "financial": {
+            "currency":        "EUR",
+            "quoted_budget":   float(budget)    if budget    else None,
+            "rate_per_hour":   float(rate)      if rate      else None,
+            "estimated_hours": float(est_hours) if est_hours else None,
+            "invoiced_amount": None,
+            "invoiced_at":     None,
+            "paid":            None,
+            "paid_at":         None,
+        },
+
+        # Time tracking (populated by `project sync-time`)
+        "time_entries": [],
+
+        # Deliverables
+        "deliverables": [],
+
+        # CopalVX (written automatically by post-push hook)
+        "copalvx": {
+            "project_id":        None,
+            "project_name":      None,
+            "last_push":         None,
+            "last_push_version": None,
+        },
+
+        # Meta
+        "tags":  [],
+        "notes": "",
+    }
+
+
+# ── Commands ───────────────────────────────────────────────────────────────────
 
 def cmd_init(name: str, base_dir: Path, use_increment: bool):
     pid, root = compute_id_and_path(name, base_dir, use_increment)
 
     if root.exists() and not use_increment:
-        print(f"Target folder already exists: {root}\n"
-              f"Tip: re-run with --inc to auto-append an incremented suffix.", file=sys.stderr)
+        print(f"error: target folder already exists: {root}\n"
+              f"tip:   re-run with --inc to auto-append an incremented suffix.", file=sys.stderr)
         sys.exit(1)
 
+    print(f"\nInitialising: {name}")
+    print(f"ID:           {pid}\n")
+
+    proj_type = ask_choice("Type", ["personal", "tlc", "client"], "tlc")
+    category  = ask_choice("Category", ["tvc", "reel", "brand", "social", "personal", "other"], "tvc")
+
+    client_name    = None
+    client_contact = None
+    if proj_type != "personal":
+        client_name    = ask("Client name")
+        client_contact = ask("Client contact (name or email)")
+
+    director = ask("Director")
+    producer = ask("Producer")
+    deadline = ask("Deadline (YYYY-MM-DD)")
+
+    budget    = None
+    rate      = None
+    est_hours = None
+    if proj_type != "personal":
+        budget    = ask("Quoted budget (EUR)")
+        rate      = ask("Rate per hour (EUR)")
+        est_hours = ask("Estimated hours")
+
+    # Create folder structure
     root.mkdir(parents=True, exist_ok=True)
-    for d in ["01_Intake","02_Workfiles","03_Exports"]:
+    for d in ["01_Intake", "02_Workfiles", "03_Exports"]:
         (root / d).mkdir(exist_ok=True)
 
-    meta = {"id": pid, "name": name, "created_at": iso_now(), "notes": ""}
-    (root / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    # Write project.yaml
+    record    = build_project_record(pid, name, proj_type, category,
+                                     client_name, client_contact,
+                                     director, producer,
+                                     deadline, budget, rate, est_hours)
+    yaml_path = root / "project.yaml"
+    with yaml_path.open("w", encoding="utf-8") as f:
+        yaml.dump(record, f, allow_unicode=True, sort_keys=False, default_flow_style=False)
 
-    items = load_projects()
-    items.append({"id": pid, "name": name, "path": str(root), "created_at": iso_now()})
-    save_projects(items)
+    # Register
+    upsert_registry(pid, name, root)
 
-    print(pid)  # print the new project ID
+    print(f"\n  project folder : {root}")
+    print(f"  project.yaml   : {yaml_path}")
+    print(f"  registry       : {REG}")
+    print(f"\n{pid}")
+
 
 def cmd_list():
-    for p in load_projects(): print(p["id"], "-", p.get("name", ""), "-", p.get("path", ""))
+    items = load_registry()
+    if not items:
+        print("No projects registered.")
+        return
+    for p in items:
+        print(p["id"], "—", p.get("name", ""), "—", p.get("path", ""))
+
+
+def cmd_register(path: Path):
+    """Upsert a project into the registry from an existing project.yaml."""
+    yaml_path = path / "project.yaml"
+    if not yaml_path.exists():
+        print(f"error: no project.yaml found at {yaml_path}", file=sys.stderr)
+        sys.exit(1)
+    with yaml_path.open("r", encoding="utf-8") as f:
+        record = yaml.safe_load(f)
+    pid  = record.get("id")
+    name = record.get("name", "")
+    if not pid:
+        print("error: project.yaml is missing the 'id' field.", file=sys.stderr)
+        sys.exit(1)
+    upsert_registry(pid, name, path)
+    print(f"registered: {pid} → {path}")
+
+
+def cmd_scan(directory: Path):
+    """Walk a directory tree and register all folders containing project.yaml."""
+    found = 0
+    for yaml_path in directory.rglob("project.yaml"):
+        proj_dir = yaml_path.parent
+        try:
+            with yaml_path.open("r", encoding="utf-8") as f:
+                record = yaml.safe_load(f)
+            pid  = record.get("id")
+            name = record.get("name", "")
+            if pid:
+                upsert_registry(pid, name, proj_dir)
+                print(f"  registered: {pid} — {proj_dir}")
+                found += 1
+        except Exception as e:
+            print(f"  skipped {yaml_path}: {e}", file=sys.stderr)
+    print(f"\n{found} project(s) registered from {directory}")
+
 
 def cmd_rollup():
-    totals = {}
-    if not SESS.exists(): return
+    """Total time per project from sessions.jsonl."""
+    totals: dict[str, int] = {}
+    if not SESS.exists():
+        print("No sessions log found.")
+        return
     with SESS.open("r", encoding="utf-8") as f:
         for line in f:
             try:
-                j = json.loads(line)
-                totals[j["project_id"]] = totals.get(j["project_id"], 0) + int(j.get("duration_sec",0))
-            except: pass
-    for k,v in sorted(totals.items(), key=lambda kv: kv[0]):
-        hours = v/3600
-        print(f"{k}: {hours:.2f}h")
+                j   = json.loads(line)
+                pid = j["project_id"]
+                totals[pid] = totals.get(pid, 0) + int(j.get("duration_sec", 0))
+            except Exception:
+                pass
+    if not totals:
+        print("No sessions recorded yet.")
+        return
+    for k, v in sorted(totals.items()):
+        print(f"{k}: {v / 3600:.2f}h")
+
 
 def cmd_remove(project_id: str) -> int:
-    items = load_projects()
+    items     = load_registry()
     new_items = [p for p in items if p.get("id") != project_id]
     if len(new_items) == len(items):
-        print(f"Project not found: {project_id}", file=sys.stderr)
+        print(f"error: project not found: {project_id}", file=sys.stderr)
         return 1
-    save_projects(new_items)
-    print(f"Removed {project_id} from registry (files left intact).")
+    save_registry(new_items)
+    print(f"removed {project_id} from registry (files left intact).")
     return 0
 
+
+# ── CLI entry point ────────────────────────────────────────────────────────────
+
 def main():
-    ap = argparse.ArgumentParser(prog="pm", description="Project Manager CLI")
+    ap  = argparse.ArgumentParser(prog="pm", description="Project Manager CLI")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    a = sub.add_parser("init", help="Create a new project")
-    a.add_argument("name", help="Project title (used in ID)")
-    a.add_argument("--dir", help="Base directory to create the project folder under (defaults to CWD)")
-    a.add_argument("--inc", action="store_true",
-                   help="Enable _NNN suffix determined by scanning existing folders' last 3 digits")
+    a = sub.add_parser("init", help="Create a new project interactively")
+    a.add_argument("name", help="Project title")
+    a.add_argument("--dir", help="Base directory (defaults to CWD)")
+    a.add_argument("--inc", action="store_true", help="Append auto-incremented _NNN suffix")
 
     sub.add_parser("list", help="List registered projects")
+
+    r = sub.add_parser("register", help="Register an existing project folder")
+    r.add_argument("path", help="Path to the project folder (must contain project.yaml)")
+
+    s = sub.add_parser("scan", help="Scan a directory tree and register all projects found")
+    s.add_argument("directory", help="Root directory to scan")
+
     sub.add_parser("rollup", help="Total time per project from sessions.jsonl")
 
-    r = sub.add_parser("remove", help="Remove a project from registry (keeps files)")
-    r.add_argument("project_id")
+    rm = sub.add_parser("remove", help="Remove a project from registry (keeps files on disk)")
+    rm.add_argument("project_id")
 
     args = ap.parse_args()
 
@@ -131,13 +352,15 @@ def main():
         cmd_init(args.name, base, args.inc)
     elif args.cmd == "list":
         cmd_list()
+    elif args.cmd == "register":
+        cmd_register(Path(args.path))
+    elif args.cmd == "scan":
+        cmd_scan(Path(args.directory))
     elif args.cmd == "rollup":
         cmd_rollup()
     elif args.cmd == "remove":
         sys.exit(cmd_remove(args.project_id))
 
+
 if __name__ == "__main__":
     main()
-
-
-    
