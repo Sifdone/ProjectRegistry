@@ -17,7 +17,7 @@ from pathlib import Path
 
 import yaml
 
-from project_tracker.config import SESSIONS_LOG
+from project_registry.config import SESSIONS_LOG
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -87,7 +87,7 @@ def resolve_project(args) -> tuple[Path, dict]:
 
 def _find_by_id(project_id: str) -> Path:
     """Look up a project path from the registry by id."""
-    from project_tracker.config import REGISTRY
+    from project_registry.config import REGISTRY
     if not REGISTRY.exists():
         print("error: registry not found. Run `pm init` to create a project.", file=sys.stderr)
         sys.exit(1)

@@ -9,12 +9,12 @@ import yaml
 # ── Data directory (cross-platform) ───────────────────────────────────────────
 
 def data_dir() -> Path:
-    """Resolve the project-tracker data directory for the current OS."""
+    """Resolve the project-registry data directory for the current OS."""
     if platform.system() == "Windows":
         base = Path(os.environ.get("APPDATA", Path.home()))
     else:  # macOS / Linux
         base = Path.home() / ".config"
-    d = base / "project-tracker"
+    d = base / "project-registry"
     d.mkdir(parents=True, exist_ok=True)
     return d
 

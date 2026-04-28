@@ -19,7 +19,7 @@ from pathlib import Path
 
 import yaml
 
-from project_tracker.config import DATA_DIR, SESSIONS_LOG
+from project_registry.config import DATA_DIR, SESSIONS_LOG
 
 
 # ── Service client ─────────────────────────────────────────────────────────────

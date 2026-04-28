@@ -1,5 +1,5 @@
-# src/project_tracker/config.py
-# Shared paths and configuration for all project-tracker tools.
+# src/project_registry/config.py
+# Shared paths and configuration for all project-registry tools.
 
 import os
 import platform
@@ -12,7 +12,7 @@ def get_data_dir() -> Path:
         base = Path(os.environ.get("APPDATA", Path.home()))
     else:  # macOS / Linux
         base = Path.home() / ".config"
-    return base / "project-tracker"
+    return base / "project-registry"
 
 
 # All tools read from this module so paths stay in sync

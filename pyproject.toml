@@ -1,5 +1,5 @@
 [project]
-name = "project-tracker"
+name = "project-registry"
 version = "0.1.0"
 description = "Project and time tracking CLI for motion design and VFX work"
 readme = "README.md"
@@ -11,10 +11,10 @@ dependencies = [
 ]
 
 [project.scripts]
-pm           = "project_tracker.pm:main"
-task-tracker = "project_tracker.task_tracker:main"
-project      = "project_tracker.project_record:main"
-tt           = "project_tracker.time_cli:main"
+pm           = "project_registry.pm:main"
+task-tracker = "project_registry.task_tracker:main"
+project      = "project_registry.project_record:main"
+tt           = "project_registry.time_cli:main"
 
 [build-system]
 requires = ["hatchling"]
