@@ -1,0 +1,18 @@
+[project]
+name = "project-tracker"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "flask>=3.1.2",
+    "waitress>=3.0.2",
+]
+
+[project.scripts]
+pm = "project_tracker.pm:main"
+task-tracker = "project_tracker.task_tracker:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
